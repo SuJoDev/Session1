@@ -1,0 +1,26 @@
+[
+    {
+    "id": 1,
+    "title": "",
+    "date_created": "2024-05-01 14:44:44",
+    "date_updated": "2024-05-01 14:44:44",
+    "category": "",
+    "has_comments": true
+    },
+    {
+        "id": 2,
+        "title": "",
+        "date_created": "2024-05-01 14:44:44",
+        "date_updated": "2024-05-01 14:44:44",
+        "category": "",
+        "has_comments": false
+        },
+        {
+            "id": 3,
+            "title": "",
+            "date_created": "2024-05-01 14:44:44",
+            "date_updated": "2024-05-01 14:44:44",
+            "category": "",
+            "has_comments": true
+            }
+]
