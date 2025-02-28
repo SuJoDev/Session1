@@ -61,9 +61,12 @@ def decode_token(token: str):
     try:
         header, payload, signature = token.split(".")
         decoded_payload = base64.urlsafe_b64decode(payload + "==").decode()
+        print(f"Декодированная полезная нагрузка: {decoded_payload}")
         return json.loads(decoded_payload)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка декодирования: {e}")
         raise ValueError("Неверный формат токена")
+
 
 def verify_token_signature(token: str):
     try:
@@ -71,15 +74,20 @@ def verify_token_signature(token: str):
         unsigned_token = f"{header}.{payload}"
         expected_signature = hmac.new(SECRET_KEY.encode(), unsigned_token.encode(), hashlib.sha256).digest()
         expected_signature = base64.urlsafe_b64encode(expected_signature).decode().rstrip("=")
+        print(f"Подпись токена: {signature}")
+        print(f"Ожидаемая подпись: {expected_signature}")
+        print(signature == expected_signature)
         return signature == expected_signature
     except Exception:
         return False
 
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    print(f"Полученный токен: {token}")
     try:
-        # Проверяем подпись токена
-        if not verify_token_signature(token):
+        if verify_token_signature(token) != True:
+            print("Неверная подпись токена")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверная подпись токена",
@@ -87,9 +95,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             )
 
         payload = decode_token(token)
+        print(f"Декодированная полезная нагрузка: {payload}")
 
-        # Проверяем срок действия токена
-        if datetime.timestamp() > payload["exp"]:
+        if datetime.now().timestamp() > payload["exp"]:
+            print("Токен истек")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Токен истек",
@@ -99,7 +108,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         return payload
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный токен",
@@ -113,19 +123,19 @@ async def login(session: SessionDep, form_data: UsersShema):
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"timestamp": datetime.timestamp, "message": "Не найдены данные учетной записи", "errorCode": "2344"}
+            detail={"timestamp": datetime.now().timestamp(), "message": "Не найдены данные учетной записи", "errorCode": "2344"}
         )
         
     if user.password != form_data.password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"timestamp": datetime.timestamp, "message": "Не верно введенные данные", "errorCode": "2344"}
+            detail={"timestamp": datetime.now().timestamp(), "message": "Не верно введенные данные", "errorCode": "2344"}
         )
     
     payload = {
         "user_id": user.id,
-        "iat": int(datetime.timestamp()),
-        "exp": int((datetime + timedelta(minutes=30)).timestamp())
+        "iat": int(datetime.now().timestamp()),
+        "exp": int((datetime.now() + timedelta(minutes=30)).timestamp())
     }
     
     access_token = create_token(payload)
