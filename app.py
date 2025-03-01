@@ -1,28 +1,30 @@
 from typing import Annotated
-from pathlib import Path
 
+import hmac
 import base64
 import hashlib
 
 import json
-import hmac
+
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from datetime import datetime, timedelta
+from models.models import *
+from shemas.shemas import *
 
-from models.models import UsersModel
-from shemas.shemas import UsersShema, DocumentComents, AuthorShema
+DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/session1"
+SECRET_KEY = "secret_key"
 
 
 app = FastAPI()
 security = HTTPBearer()
 
-DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/session1"
+error_code = 1000
 
 engine = create_async_engine(DATABASE_URL)
 new_session = async_sessionmaker(engine, expire_on_commit=False)
@@ -30,159 +32,161 @@ new_session = async_sessionmaker(engine, expire_on_commit=False)
 async def get_session():
     async with new_session() as session:
         yield session
-
+        
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-SECRET_KEY = 'secret_key'
+def score_error():
+    global error_code
+    error_code +=1
+    return error_code
 
-def create_token(payload):
-    header = {"alg": "HS256", "typ": "JWT"}
-    
-    def encode(data):
-        return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
-
-    unsigned_token = encode(header) + "." + encode(payload)
-
-    signature = hmac.new(SECRET_KEY.encode(), unsigned_token.encode(), hashlib.sha256).digest()
-    signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
-
-    token = unsigned_token + "." + signature
-    return token
-
-def verify_password(plain_password, hashed_password):
-    return plain_password == hashed_password  
-
-async def get_user_from_db(session: SessionDep, username: str):
+async def get_user_from_db(session:SessionDep, username: str):
     query = select(UsersModel).where(UsersModel.username == username)
     result = await session.execute(query)
     return result.scalar_one_or_none()
 
-def decode_token(token: str):
-    try:
-        header, payload, signature = token.split(".")
-        decoded_payload = base64.urlsafe_b64decode(payload + "==").decode()
-        print(f"Декодированная полезная нагрузка: {decoded_payload}")
-        return json.loads(decoded_payload)
-    except Exception as e:
-        print(f"Ошибка декодирования: {e}")
-        raise ValueError("Неверный формат токена")
+def encode(data):
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
 
+def create_token(payload):
+    header = {"alg": "SH256", "typ": "JWT"}
+    
+    unsigned_token = encode(header) + "." + encode(payload)
+    signature = hmac.new(SECRET_KEY.encode(), unsigned_token.encode(), hashlib.sha256).digest()
+    signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    token = unsigned_token + "." + signature
+    return token
 
-def verify_token_signature(token: str):
+def verfy_signature_token(token:str):
     try:
         header, payload, signature = token.split(".")
         unsigned_token = f"{header}.{payload}"
         expected_signature = hmac.new(SECRET_KEY.encode(), unsigned_token.encode(), hashlib.sha256).digest()
         expected_signature = base64.urlsafe_b64encode(expected_signature).decode().rstrip("=")
-        print(f"Подпись токена: {signature}")
-        print(f"Ожидаемая подпись: {expected_signature}")
-        print(signature == expected_signature)
         return signature == expected_signature
     except Exception:
-        return False
-
-
+        return False    
+    
+def decode_payload(token:str):
+    try:
+        header, payload, signature = token.split(".")
+        decoded_payload = base64.urlsafe_b64decode(payload + "==").decode()
+        return json.loads(decoded_payload)
+    except Exception:
+        return ValueError("Неверный формат токена")
+    
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    print(f"Полученный токен: {token}")
+    
     try:
-        if verify_token_signature(token) != True:
-            print("Неверная подпись токена")
+        if verfy_signature_token(token) != True:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Неверная подпись токена",
-                headers={"WWW-Authenticate": "Bearer"},
+                detail="Неподходящий формат токена"
             )
-
-        payload = decode_token(token)
-        print(f"Декодированная полезная нагрузка: {payload}")
-
+            
+        payload = decode_payload(token)
+        
         if datetime.now().timestamp() > payload["exp"]:
-            print("Токен истек")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Токен истек",
-                headers={"WWW-Authenticate": "Bearer"},
+                detail="Срок действия токена истек"
             )
-
+        
         return payload
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Ошибка: {e}")
+    
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный токен",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="НЕверный формат токена"
         )
+    
 
 @app.post("/api/v1/SignIn")
-async def login(session: SessionDep, form_data: UsersShema):
+async def auth(session: SessionDep, form_data: UserShema):
     user = await get_user_from_db(session, form_data.name)
     
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"timestamp": datetime.now().timestamp(), "message": "Не найдены данные учетной записи", "errorCode": "2344"}
+            detail={"timestamp": datetime.now().timestamp(), "messege": "Введенные данные не найдены", "error_code": score_error()}
         )
         
-    if user.password != form_data.password:
+    if form_data.password != user.password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"timestamp": datetime.now().timestamp(), "message": "Не верно введенные данные", "errorCode": "2344"}
+            detail={"timestamp": datetime.now().timestamp(), "messege": "Введенные данные неверны", "error_code": score_error()}
         )
-    
-    payload = {
+        
+    playload = {
         "user_id": user.id,
-        "iat": int(datetime.now().timestamp()),
+        "iat" : int(datetime.now().timestamp()),
         "exp": int((datetime.now() + timedelta(minutes=30)).timestamp())
     }
     
-    access_token = create_token(payload)
-    return {"access_token": access_token, "token_type": "bearer"}
+    acess_token = create_token(playload)
+    
+    return {"acess_token": acess_token, "type": "bearer"}
 
-@app.get("/users")
-async def get_users(session: SessionDep):
-    query = select(UsersModel)
+@app.get("/api/v1/Documents")
+async def get_documents(session: SessionDep, current_user: dict = Depends(get_current_user)):
+    query = select(DocumentsModel)
     result = await session.execute(query)
     return result.scalars().all()
 
-@app.get("/api/v1/Documents")
-async def get_documents(current_user: dict = Depends(get_current_user)):
-    with open('documents.json', "r", encoding="utf_8") as file:
-        documents = json.load(file)
-    return documents
-
 @app.get("/api/v1/Document/{documentId}/Comments")
-async def get_comments(document_id: int, current_user: dict = Depends(get_current_user)):
-    with open('documents_coment.json', "r", encoding="utf_8") as file:
-        comments = json.load(file)
-        filtered_comments = []
-        for comment in comments:
-            if comment["document_id"] == document_id:
-                filtered_comments.append(comment)
-        return filtered_comments
+async def def_get_coments(session:SessionDep,  coment_id: int, curent_user: dict = Depends(get_current_user)):
+    query = select(ComentsModel).where(ComentsModel.document_id == coment_id)
+    result = await session.execute(query)
+    result = result.scalars().all()
+    if result == []:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail= {
+                    "timestamp": datetime.now().timestamp(),
+                    "message": "Не найдены комментарии для документа",
+                    "errorCode": score_error()
+                    }
+                )
+    else:
+        return result
     
-@app.post("/api/v1/Document/{documentId}/Coment")
-async def get_comment(documentId: int, coment: DocumentComents, current_user: dict = Depends(get_current_user)):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Не авторизован")
-    with open("documents_coment.json", "r+", encoding="utf-8") as file:
-        comentss = json.load(file)
-        found = False
-        for comment in comentss:
-            if comment["id"] == documentId:
-                comment["document_id"] = coment.document_id
-                comment["text"] = coment.text
-                comment["date_created"] = coment.date_created
-                comment["date_updated"] = coment.date_updated
-                found = True
+@app.post("/api/v1/Document/{documentId}/Comments")
+async def def_post_coment(
+    session: SessionDep,
+    documentId: int,
+    coment_data: ComentsAddShema,
+    curent_user: dict = Depends(get_current_user)
+):
+    # Проверяем, существует ли документ с указанным ID
+    document_exists = await session.execute(
+        select(ComentsModel).where(ComentsModel.document_id == documentId)
+    )
+    if not document_exists.scalar():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "timestamp": datetime.now().timestamp(),
+                "message": "Документ не найден",
+                "errorCode": score_error()
+            }
+        )
 
-        if not found:
-            raise HTTPException(status_code=404, detail={"timestamp": 1716767880,"message": "Не найдены комментарии для документа","errorCode": "2344"})
+    # Создаем новый комментарий
+    new_coment = ComentsModel(
+        title=coment_data.title,
+        date_created=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        date_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        author=coment_data.author.dict(),
+        document_id=documentId
+    )
 
-        file.seek(0)
-        json.dump(comentss, file, ensure_ascii=False, indent=4)
-        file.truncate()
-    
-    return {"message": "Комментарий обновлён", "document_id": documentId}
+    # Добавляем комментарий в базу данных
+    session.add(new_coment)
+    await session.commit()
+    await session.refresh(new_coment)
+
+    return HTTPException(
+        status_code=status.HTTP_200_OK,
+        detail={"message": "Коментарий добавлен успешно"}
+    )
